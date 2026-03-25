@@ -68,6 +68,152 @@ $normalizeRoomLabel = static function (string $label): ?int {
     return null;
 };
 
+$app->respond('GET', '/openapi.json', function ($request) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $spec = [
+        'openapi' => '3.0.3',
+        'info' => [
+            'title' => 'Landing Pages Flats API',
+            'version' => '1.0.0',
+        ],
+        'servers' => [
+            ['url' => 'http://localhost:8081'],
+        ],
+        'paths' => [
+            '/' => [
+                'get' => [
+                    'summary' => 'Healthcheck',
+                    'responses' => [
+                        '200' => ['description' => 'OK'],
+                    ],
+                ],
+            ],
+            '/store' => [
+                'post' => [
+                    'summary' => 'Store flat payload (insert or duplicate)',
+                    'requestBody' => [
+                        'required' => true,
+                        'content' => [
+                            'application/json' => [
+                                'schema' => ['$ref' => '#/components/schemas/FlatPayload'],
+                            ],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => ['description' => 'Inserted or duplicate'],
+                        '400' => ['description' => 'Invalid payload'],
+                        '500' => ['description' => 'Insert failed'],
+                    ],
+                ],
+            ],
+            '/{source}' => [
+                'get' => [
+                    'summary' => 'List flats by source',
+                    'parameters' => [
+                        [
+                            'name' => 'source',
+                            'in' => 'path',
+                            'required' => true,
+                            'schema' => ['type' => 'string'],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => ['description' => 'OK'],
+                    ],
+                ],
+            ],
+            '/{source}/filter' => [
+                'get' => [
+                    'summary' => 'Filter flats by source',
+                    'parameters' => [
+                        [
+                            'name' => 'source',
+                            'in' => 'path',
+                            'required' => true,
+                            'schema' => ['type' => 'string'],
+                        ],
+                        [
+                            'name' => 'countRooms',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'CSV or repeated. Examples: "Студия,1 комната,2 комнаты"',
+                            'schema' => ['type' => 'string'],
+                        ],
+                        ['name' => 'priceFrom', 'in' => 'query', 'schema' => ['type' => 'integer']],
+                        ['name' => 'priceTo', 'in' => 'query', 'schema' => ['type' => 'integer']],
+                        ['name' => 'squareFrom', 'in' => 'query', 'schema' => ['type' => 'number']],
+                        ['name' => 'squareTo', 'in' => 'query', 'schema' => ['type' => 'number']],
+                        ['name' => 'floorFrom', 'in' => 'query', 'schema' => ['type' => 'integer']],
+                        ['name' => 'floorTo', 'in' => 'query', 'schema' => ['type' => 'integer']],
+                        [
+                            'name' => 'corpuses',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'CSV or repeated корпуса',
+                            'schema' => ['type' => 'string'],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => ['description' => 'OK'],
+                    ],
+                ],
+            ],
+            '/{source}/corpuses' => [
+                'get' => [
+                    'summary' => 'Unique corpuses by source',
+                    'parameters' => [
+                        [
+                            'name' => 'source',
+                            'in' => 'path',
+                            'required' => true,
+                            'schema' => ['type' => 'string'],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => ['description' => 'OK'],
+                    ],
+                ],
+            ],
+        ],
+        'components' => [
+            'schemas' => [
+                'FlatPayload' => [
+                    'type' => 'object',
+                    'required' => ['source', 'url', 'flatNumber', 'totalArea', 'floor', 'totalFloors'],
+                    'properties' => [
+                        'source' => ['type' => 'string'],
+                        'url' => ['type' => 'string'],
+                        'flatNumber' => ['type' => 'string'],
+                        'countRooms' => ['type' => 'integer', 'nullable' => true, 'description' => '0=studio, 1..5'],
+                        'totalArea' => ['type' => 'number'],
+                        'livingArea' => ['type' => 'number', 'nullable' => true],
+                        'floor' => ['type' => 'integer'],
+                        'totalFloors' => ['type' => 'integer'],
+                        'queue' => ['type' => 'string', 'nullable' => true],
+                        'corpuses' => ['type' => 'integer', 'nullable' => true],
+                        'dueDate' => ['type' => 'string', 'nullable' => true, 'description' => 'DateTime string'],
+                        'price' => ['type' => 'integer', 'nullable' => true],
+                        'imageUrl' => ['type' => 'string', 'nullable' => true],
+                        'createdAt' => ['type' => 'string', 'nullable' => true],
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    // Klein can dispatch multiple matching routes; hard-exit to avoid fallthrough into `/:source`.
+    echo json_encode($spec, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+});
+
+$app->respond('GET', '/docs', function () {
+    header('Content-Type: text/html; charset=utf-8');
+    require_once __DIR__ . '/swaggerUi.php';
+    echo renderSwaggerUiHtml('/openapi.json');
+    exit;
+});
+
 $app->respond('GET', '/', function ($request) use ($database) {
     global $jsonResponse;
     return $jsonResponse($request, [
@@ -77,11 +223,7 @@ $app->respond('GET', '/', function ($request) use ($database) {
 });
 
 $app->respond('POST', '/store', function ($request) use ($database) {
-    /**
-     * This endpoint is used by the Node.js parser (`axios.post(..., flatObject)`).
-     * Klein's `$request->body()` returns a raw string, so we must `json_decode`
-     * (and only then map values to the `flats` table schema).
-     */
+
     $rawBody = $request->body();
     $decoded = null;
     if (is_string($rawBody) && trim($rawBody) !== '') {
@@ -121,7 +263,6 @@ $app->respond('POST', '/store', function ($request) use ($database) {
         }
     };
 
-    // Map only fields that exist in `flats` table.
     $data = [];
     $data['source'] = isset($decoded['source']) ? (string) $decoded['source'] : null;
     $data['url'] = isset($decoded['url']) ? (string) $decoded['url'] : null;
@@ -168,14 +309,12 @@ $app->respond('POST', '/store', function ($request) use ($database) {
             'data' => $flat,
         ]);
     } catch (\Throwable $e) {
-        // Common case for repeated scrapes: UNIQUE constraint on url / imageUrl.
         $msg = $e->getMessage();
         $looksLikeUnique =
             stripos($msg, 'UNIQUE constraint failed') !== false ||
             stripos($msg, 'duplicate') !== false;
 
         if ($looksLikeUnique) {
-            // Try to return the existing record by url.
             $existing = null;
             if (isset($data['url']) && is_string($data['url']) && $data['url'] !== '') {
                 $existing = $database->get('flats', '*', ['url' => $data['url']]);
@@ -235,12 +374,6 @@ $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
 
     $params = $request->params() ?: [];
 
-    // Inputs:
-    // - countRooms: "Студия,1 комната,2 комнаты" or repeated params
-    // - priceFrom/priceTo
-    // - squareFrom/squareTo (maps to totalArea)
-    // - floorFrom/floorTo
-    // - corpuses (single, csv, or repeated)
     $roomLabels = $parseCsvOrArray($params['countRooms'] ?? null);
     $rooms = [];
     foreach ($roomLabels as $label) {
@@ -267,7 +400,6 @@ $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
     $where = ['AND' => ['source' => $request->source]];
 
     if ($rooms !== []) {
-        // Requires `countRooms` column to be populated; old rows may not match.
         $where['AND']['countRooms'] = $rooms;
     }
     if ($priceFrom !== null) $where['AND']['price[>=]'] = $priceFrom;

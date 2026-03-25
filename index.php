@@ -17,12 +17,63 @@ function metaResponse($request): array
     ];
 }
 
+$jsonResponse = static function ($request, array $payload, int $statusCode = 200): string {
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=utf-8');
+    $payload = $payload + metaResponse($request);
+    return json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+};
+
+$parseCsvOrArray = static function ($value): array {
+    if ($value === null) {
+        return [];
+    }
+    if (is_array($value)) {
+        return array_values(array_filter(array_map('trim', array_map('strval', $value)), static fn($s) => $s !== ''));
+    }
+    $s = trim((string)$value);
+    if ($s === '') {
+        return [];
+    }
+    return array_values(array_filter(array_map('trim', explode(',', $s)), static fn($x) => $x !== ''));
+};
+
+$toNullableInt = static function ($value): ?int {
+    if ($value === null) return null;
+    if (is_int($value)) return $value;
+    if (is_float($value)) return (int)$value;
+    $s = trim((string)$value);
+    if ($s === '') return null;
+    $s = preg_replace('/(?!^-)[^\d]+/', '', $s);
+    if ($s === '' || $s === '-') return null;
+    return (int)$s;
+};
+
+$toNullableFloat = static function ($value): ?float {
+    if ($value === null) return null;
+    if (is_int($value) || is_float($value)) return (float)$value;
+    $s = trim((string)$value);
+    if ($s === '') return null;
+    $s = str_replace(',', '.', $s);
+    $s = preg_replace('/[^0-9\.\-]+/', '', $s);
+    if ($s === '' || $s === '-' || $s === '.') return null;
+    return (float)$s;
+};
+
+$normalizeRoomLabel = static function (string $label): ?int {
+    $s = mb_strtolower(trim($label));
+    if ($s === '') return null;
+    if ($s === 'студия' || $s === 'studio') return 0;
+    if (preg_match('/^(\d+)/u', $s, $m)) return (int)$m[1];
+    return null;
+};
+
 $app->respond('GET', '/', function ($request) use ($database) {
-    return [
+    global $jsonResponse;
+    return $jsonResponse($request, [
         'request' => true,
         'data' => 'Hello World',
-        ...metaResponse($request)
-    ];
+    ]);
 });
 
 $app->respond('POST', '/store', function ($request) use ($database) {
@@ -48,51 +99,7 @@ $app->respond('POST', '/store', function ($request) use ($database) {
         }
     }
 
-    $parseNullableInt = static function ($value): ?int {
-        if ($value === null) {
-            return null;
-        }
-        if (is_int($value)) {
-            return $value;
-        }
-        if (is_float($value)) {
-            return (int) $value;
-        }
-        $s = trim((string) $value);
-        if ($s === '') {
-            return null;
-        }
-
-        // Keep only digits and optional leading minus.
-        $s = preg_replace('/(?!^-)[^\d]+/', '', $s);
-        if ($s === '' || $s === '-') {
-            return null;
-        }
-
-        return (int) $s;
-    };
-
-    $parseNullableFloat = static function ($value): ?float {
-        if ($value === null) {
-            return null;
-        }
-        if (is_int($value) || is_float($value)) {
-            return (float) $value;
-        }
-        $s = trim((string) $value);
-        if ($s === '') {
-            return null;
-        }
-
-        // Normalize decimal separator and remove everything else.
-        $s = str_replace(',', '.', $s);
-        $s = preg_replace('/[^0-9\.\-]+/', '', $s);
-        if ($s === '' || $s === '-' || $s === '.') {
-            return null;
-        }
-
-        return (float) $s;
-    };
+    global $jsonResponse, $toNullableInt, $toNullableFloat;
 
     $parseNullableDateTime = static function ($value): ?string {
         if ($value === null) {
@@ -120,17 +127,18 @@ $app->respond('POST', '/store', function ($request) use ($database) {
     $data['url'] = isset($decoded['url']) ? (string) $decoded['url'] : null;
     $data['flatNumber'] = isset($decoded['flatNumber']) ? (string) $decoded['flatNumber'] : null;
 
-    $data['totalArea'] = $parseNullableFloat($decoded['totalArea'] ?? null);
-    $data['livingArea'] = $parseNullableFloat($decoded['livingArea'] ?? null);
-    $data['floor'] = $parseNullableInt($decoded['floor'] ?? null);
-    $data['totalFloors'] = $parseNullableInt($decoded['totalFloors'] ?? null);
+    $data['countRooms'] = $toNullableInt($decoded['countRooms'] ?? null);
+    $data['totalArea'] = $toNullableFloat($decoded['totalArea'] ?? null);
+    $data['livingArea'] = $toNullableFloat($decoded['livingArea'] ?? null);
+    $data['floor'] = $toNullableInt($decoded['floor'] ?? null);
+    $data['totalFloors'] = $toNullableInt($decoded['totalFloors'] ?? null);
 
     $queue = $decoded['queue'] ?? null;
     $data['queue'] = is_string($queue) ? (trim($queue) !== '' ? $queue : null) : null;
 
-    $data['corpuses'] = $parseNullableInt($decoded['corpuses'] ?? null);
+    $data['corpuses'] = $toNullableInt($decoded['corpuses'] ?? null);
     $data['dueDate'] = $parseNullableDateTime($decoded['dueDate'] ?? null);
-    $data['price'] = $parseNullableInt($decoded['price'] ?? null);
+    $data['price'] = $toNullableInt($decoded['price'] ?? null);
 
     $imageUrl = $decoded['imageUrl'] ?? null;
     $data['imageUrl'] = is_string($imageUrl) ? (trim($imageUrl) !== '' ? $imageUrl : null) : null;
@@ -146,39 +154,145 @@ $app->respond('POST', '/store', function ($request) use ($database) {
     }
 
     if ($missing !== []) {
-        http_response_code(400);
-        header('Content-Type: application/json; charset=utf-8');
-        return [
+        return $jsonResponse($request, [
             'request' => false,
             'error' => 'Invalid payload for /store',
             'missing_fields' => $missing,
-        ];
+        ], 400);
     }
 
-    $flat = $database->insert('flats', $data);
-    return [
-        'request' => true,
-        'data' => $flat,
-        ...metaResponse($request)
-    ];
+    try {
+        $flat = $database->insert('flats', $data);
+        return $jsonResponse($request, [
+            'request' => true,
+            'data' => $flat,
+        ]);
+    } catch (\Throwable $e) {
+        // Common case for repeated scrapes: UNIQUE constraint on url / imageUrl.
+        $msg = $e->getMessage();
+        $looksLikeUnique =
+            stripos($msg, 'UNIQUE constraint failed') !== false ||
+            stripos($msg, 'duplicate') !== false;
+
+        if ($looksLikeUnique) {
+            // Try to return the existing record by url.
+            $existing = null;
+            if (isset($data['url']) && is_string($data['url']) && $data['url'] !== '') {
+                $existing = $database->get('flats', '*', ['url' => $data['url']]);
+            }
+
+            return $jsonResponse($request, [
+                'request' => true,
+                'duplicate' => true,
+                'data' => $existing,
+            ]);
+        }
+
+        return $jsonResponse($request, [
+            'request' => false,
+            'error' => 'Insert failed',
+            'message' => $msg,
+        ], 500);
+    }
 });
 
 $app->respond('GET', '/[:source]', function ($request) use ($database) {
     $flats = $database->select('flats', '*', ['source' => $request->source]);
-    return [
+    global $jsonResponse;
+    return $jsonResponse($request, [
         'request' => true,
         'data' => $flats,
-        ...metaResponse($request)
-    ];
+    ]);
+});
+
+$app->respond('GET', '/[:source]/corpuses', function ($request) use ($database) {
+    global $jsonResponse;
+    $rows = $database->select('flats', ['corpuses'], [
+        'AND' => [
+            'source' => $request->source,
+            'corpuses[!]' => null,
+        ],
+        'GROUP' => 'corpuses',
+        'ORDER' => ['corpuses' => 'ASC'],
+    ]);
+    $corpuses = [];
+    foreach ($rows as $row) {
+        if (is_array($row) && array_key_exists('corpuses', $row) && $row['corpuses'] !== null && $row['corpuses'] !== '') {
+            $corpuses[] = (int)$row['corpuses'];
+        }
+    }
+    $corpuses = array_values(array_unique($corpuses));
+    sort($corpuses);
+
+    return $jsonResponse($request, [
+        'request' => true,
+        'data' => $corpuses,
+    ]);
 });
 
 $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
-    $flats = $database->select('flats', '*', ['source' => $request->source]);
-    return [
+    global $jsonResponse, $parseCsvOrArray, $toNullableInt, $toNullableFloat, $normalizeRoomLabel;
+
+    $params = $request->params() ?: [];
+
+    // Inputs:
+    // - countRooms: "Студия,1 комната,2 комнаты" or repeated params
+    // - priceFrom/priceTo
+    // - squareFrom/squareTo (maps to totalArea)
+    // - floorFrom/floorTo
+    // - corpuses (single, csv, or repeated)
+    $roomLabels = $parseCsvOrArray($params['countRooms'] ?? null);
+    $rooms = [];
+    foreach ($roomLabels as $label) {
+        $n = $normalizeRoomLabel((string)$label);
+        if ($n !== null) $rooms[] = $n;
+    }
+    $rooms = array_values(array_unique($rooms));
+
+    $priceFrom = $toNullableInt($params['priceFrom'] ?? ($params['price_from'] ?? null));
+    $priceTo = $toNullableInt($params['priceTo'] ?? ($params['price_to'] ?? null));
+    $squareFrom = $toNullableFloat($params['squareFrom'] ?? ($params['square_from'] ?? null));
+    $squareTo = $toNullableFloat($params['squareTo'] ?? ($params['square_to'] ?? null));
+    $floorFrom = $toNullableInt($params['floorFrom'] ?? ($params['floor_from'] ?? null));
+    $floorTo = $toNullableInt($params['floorTo'] ?? ($params['floor_to'] ?? null));
+
+    $corpusesRaw = $parseCsvOrArray($params['corpuses'] ?? ($params['corpuses[]'] ?? null));
+    $corpuses = [];
+    foreach ($corpusesRaw as $c) {
+        $n = $toNullableInt($c);
+        if ($n !== null) $corpuses[] = $n;
+    }
+    $corpuses = array_values(array_unique($corpuses));
+
+    $where = ['AND' => ['source' => $request->source]];
+
+    if ($rooms !== []) {
+        // Requires `countRooms` column to be populated; old rows may not match.
+        $where['AND']['countRooms'] = $rooms;
+    }
+    if ($priceFrom !== null) $where['AND']['price[>=]'] = $priceFrom;
+    if ($priceTo !== null) $where['AND']['price[<=]'] = $priceTo;
+    if ($squareFrom !== null) $where['AND']['totalArea[>=]'] = $squareFrom;
+    if ($squareTo !== null) $where['AND']['totalArea[<=]'] = $squareTo;
+    if ($floorFrom !== null) $where['AND']['floor[>=]'] = $floorFrom;
+    if ($floorTo !== null) $where['AND']['floor[<=]'] = $floorTo;
+    if ($corpuses !== []) $where['AND']['corpuses'] = $corpuses;
+
+    $flats = $database->select('flats', '*', $where);
+    return $jsonResponse($request, [
         'request' => true,
         'data' => $flats,
-        ...metaResponse($request)
-    ];
+        'filters' => [
+            'countRooms' => $rooms,
+            'priceFrom' => $priceFrom,
+            'priceTo' => $priceTo,
+            'squareFrom' => $squareFrom,
+            'squareTo' => $squareTo,
+            'floorFrom' => $floorFrom,
+            'floorTo' => $floorTo,
+            'corpuses' => $corpuses,
+        ],
+    ]);
 });
 
 $app->dispatch();

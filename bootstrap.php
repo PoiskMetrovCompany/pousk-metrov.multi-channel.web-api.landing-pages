@@ -7,9 +7,19 @@ use Klein\Klein;
 
 try {
     $envPath = __DIR__ . '/.env';
-    $env = parse_ini_file($envPath);
-    if ($env === false) {
-        throw new RuntimeException("Cannot read .env file at: {$envPath}");
+    $env = [];
+    if (file_exists($envPath)) {
+        $envParsed = parse_ini_file($envPath);
+        if ($envParsed === false) {
+            throw new RuntimeException("Cannot read .env file at: {$envPath}");
+        }
+        $env = $envParsed;
+    } else {
+        // Allow container defaults when .env is not present (useful for local dev).
+        $env = [
+            'DB_TYPE' => 'sqlite',
+            'DB_FILE' => 'app.db',
+        ];
     }
 
     $dbType = $env['DB_TYPE'] ?? '';
@@ -43,6 +53,7 @@ try {
             url VARCHAR(255) NOT NULL UNIQUE,
             source VARCHAR(255) NOT NULL,
             flatNumber VARCHAR(255) NOT NULL,
+            countRooms INTEGER NULL,
             totalArea FLOAT NOT NULL,
             livingArea FLOAT NULL,
             floor INTEGER NOT NULL,
@@ -55,6 +66,21 @@ try {
             createdAt DATETIME NULL
         );"
     )->execute();
+
+    // Lightweight migration for existing DBs: ensure new columns exist.
+    $columns = $database->query("PRAGMA table_info(flats);")->fetchAll(PDO::FETCH_ASSOC);
+    $columnNames = array_map(static fn(array $c) => (string)($c['name'] ?? ''), is_array($columns) ? $columns : []);
+    $hasCountRooms = in_array('countRooms', $columnNames, true);
+    if (!$hasCountRooms) {
+        try {
+            $database->query("ALTER TABLE flats ADD COLUMN countRooms INTEGER NULL;")->execute();
+        } catch (Throwable $e) {
+            // If another process already added the column between PRAGMA and ALTER, ignore.
+            if (stripos($e->getMessage(), 'duplicate column name') === false) {
+                throw $e;
+            }
+        }
+    }
 } catch (Throwable $exception) {
     http_response_code(500);
     header('Content-Type: application/json; charset=utf-8');

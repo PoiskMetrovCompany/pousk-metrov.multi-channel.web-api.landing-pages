@@ -12,6 +12,8 @@ services:
   nginx:
     image: nginx:1.27-alpine
     container_name: landing-api-nginx
+    profiles:
+      - debug
     depends_on:
       - php-fpm
     ports:

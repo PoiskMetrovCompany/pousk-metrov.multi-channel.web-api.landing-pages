@@ -49,6 +49,26 @@ $toNullableInt = static function ($value): ?int {
     return (int)$s;
 };
 
+$toIntClamped = static function ($value, int $default, int $min, int $max): int {
+    if ($value === null) return $default;
+
+    if (is_int($value)) {
+        $n = $value;
+    } elseif (is_float($value)) {
+        $n = (int)$value;
+    } else {
+        $s = trim((string)$value);
+        if ($s === '') return $default;
+        $s = preg_replace('/(?!^-)[^\d]+/', '', $s);
+        if ($s === '' || $s === '-') return $default;
+        $n = (int)$s;
+    }
+
+    if ($n < $min) return $min;
+    if ($n > $max) return $max;
+    return $n;
+};
+
 $toNullableFloat = static function ($value): ?float {
     if ($value === null) return null;
     if (is_int($value) || is_float($value)) return (float)$value;
@@ -117,9 +137,30 @@ $app->respond('GET', '/openapi.json', function ($request) {
                             'required' => true,
                             'schema' => ['type' => 'string'],
                         ],
+                        [
+                            'name' => 'page',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'Page number (1-based)',
+                            'schema' => ['type' => 'integer', 'minimum' => 1, 'default' => 1],
+                        ],
+                        [
+                            'name' => 'pageSize',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'Items per page',
+                            'schema' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
+                        ],
                     ],
                     'responses' => [
-                        '200' => ['description' => 'OK'],
+                        '200' => [
+                            'description' => 'OK',
+                            'content' => [
+                                'application/json' => [
+                                    'schema' => ['$ref' => '#/components/schemas/FlatsListResponse'],
+                                ],
+                            ],
+                        ],
                     ],
                 ],
             ],
@@ -153,9 +194,30 @@ $app->respond('GET', '/openapi.json', function ($request) {
                             'description' => 'CSV or repeated корпуса',
                             'schema' => ['type' => 'string'],
                         ],
+                        [
+                            'name' => 'page',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'Page number (1-based)',
+                            'schema' => ['type' => 'integer', 'minimum' => 1, 'default' => 1],
+                        ],
+                        [
+                            'name' => 'pageSize',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'Items per page',
+                            'schema' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
+                        ],
                     ],
                     'responses' => [
-                        '200' => ['description' => 'OK'],
+                        '200' => [
+                            'description' => 'OK',
+                            'content' => [
+                                'application/json' => [
+                                    'schema' => ['$ref' => '#/components/schemas/FlatsFilterResponse'],
+                                ],
+                            ],
+                        ],
                     ],
                 ],
             ],
@@ -196,6 +258,95 @@ $app->respond('GET', '/openapi.json', function ($request) {
                         'price' => ['type' => 'integer', 'nullable' => true],
                         'imageUrl' => ['type' => 'string', 'nullable' => true],
                         'createdAt' => ['type' => 'string', 'nullable' => true],
+                    ],
+                ],
+                'Flat' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'id' => ['type' => 'integer'],
+                        'source' => ['type' => 'string'],
+                        'url' => ['type' => 'string'],
+                        'flatNumber' => ['type' => 'string'],
+                        'countRooms' => ['type' => 'integer', 'nullable' => true, 'description' => '0=studio, 1..5'],
+                        'totalArea' => ['type' => 'number'],
+                        'livingArea' => ['type' => 'number', 'nullable' => true],
+                        'floor' => ['type' => 'integer'],
+                        'totalFloors' => ['type' => 'integer'],
+                        'queue' => ['type' => 'string', 'nullable' => true],
+                        'corpuses' => ['type' => 'integer', 'nullable' => true],
+                        'dueDate' => ['type' => 'string', 'nullable' => true, 'description' => 'DateTime string'],
+                        'price' => ['type' => 'integer', 'nullable' => true],
+                        'imageUrl' => ['type' => 'string', 'nullable' => true],
+                        'createdAt' => ['type' => 'string', 'nullable' => true],
+                    ],
+                ],
+                'Pagination' => [
+                    'type' => 'object',
+                    'required' => ['page', 'pageSize', 'total', 'totalPages'],
+                    'properties' => [
+                        'page' => ['type' => 'integer', 'minimum' => 1],
+                        'pageSize' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100],
+                        'total' => ['type' => 'integer', 'minimum' => 0],
+                        'totalPages' => ['type' => 'integer', 'minimum' => 0],
+                    ],
+                ],
+                'RequestDetail' => [
+                    'type' => 'object',
+                    'required' => ['method', 'path', 'request'],
+                    'properties' => [
+                        'method' => ['type' => 'string'],
+                        'path' => ['type' => 'string'],
+                        'request' => ['type' => 'object', 'additionalProperties' => true],
+                    ],
+                ],
+                'FlatsListResponse' => [
+                    'type' => 'object',
+                    'required' => ['request', 'data', 'pagination', 'request_detail'],
+                    'properties' => [
+                        'request' => ['type' => 'boolean'],
+                        'data' => [
+                            'type' => 'array',
+                            'items' => ['$ref' => '#/components/schemas/Flat'],
+                        ],
+                        'pagination' => ['$ref' => '#/components/schemas/Pagination'],
+                        'request_detail' => ['$ref' => '#/components/schemas/RequestDetail'],
+                    ],
+                ],
+                'FlatFilters' => [
+                    'type' => 'object',
+                    'required' => [
+                        'countRooms',
+                        'priceFrom',
+                        'priceTo',
+                        'squareFrom',
+                        'squareTo',
+                        'floorFrom',
+                        'floorTo',
+                        'corpuses',
+                    ],
+                    'properties' => [
+                        'countRooms' => ['type' => 'array', 'items' => ['type' => 'integer']],
+                        'priceFrom' => ['type' => 'integer', 'nullable' => true],
+                        'priceTo' => ['type' => 'integer', 'nullable' => true],
+                        'squareFrom' => ['type' => 'number', 'nullable' => true],
+                        'squareTo' => ['type' => 'number', 'nullable' => true],
+                        'floorFrom' => ['type' => 'integer', 'nullable' => true],
+                        'floorTo' => ['type' => 'integer', 'nullable' => true],
+                        'corpuses' => ['type' => 'array', 'items' => ['type' => 'integer']],
+                    ],
+                ],
+                'FlatsFilterResponse' => [
+                    'type' => 'object',
+                    'required' => ['request', 'data', 'filters', 'pagination', 'request_detail'],
+                    'properties' => [
+                        'request' => ['type' => 'boolean'],
+                        'data' => [
+                            'type' => 'array',
+                            'items' => ['$ref' => '#/components/schemas/Flat'],
+                        ],
+                        'filters' => ['$ref' => '#/components/schemas/FlatFilters'],
+                        'pagination' => ['$ref' => '#/components/schemas/Pagination'],
+                        'request_detail' => ['$ref' => '#/components/schemas/RequestDetail'],
                     ],
                 ],
             ],
@@ -336,11 +487,33 @@ $app->respond('POST', '/store', function ($request) use ($database) {
 });
 
 $app->respond('GET', '/[:source]', function ($request) use ($database) {
-    $flats = $database->select('flats', '*', ['source' => $request->source]);
-    global $jsonResponse;
+    global $jsonResponse, $toIntClamped;
+
+    $params = $request->params() ?: [];
+    $page = $toIntClamped($params['page'] ?? null, 1, 1, 1000);
+    $pageSize = $toIntClamped($params['pageSize'] ?? ($params['page_size'] ?? null), 20, 1, 100);
+    $offset = ($page - 1) * $pageSize;
+
+    $baseWhere = ['source' => $request->source];
+    $total = $database->count('flats', null, null, $baseWhere);
+    if ($total === null) $total = 0;
+
+    $where = $baseWhere;
+    $where['ORDER'] = ['id' => 'ASC'];
+    $where['LIMIT'] = [$offset, $pageSize];
+    $flats = $database->select('flats', '*', $where);
+
+    $totalPages = $pageSize > 0 ? (int)ceil($total / $pageSize) : 0;
+
     return $jsonResponse($request, [
         'request' => true,
         'data' => $flats,
+        'pagination' => [
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'total' => $total,
+            'totalPages' => $totalPages,
+        ],
     ]);
 });
 
@@ -370,9 +543,13 @@ $app->respond('GET', '/[:source]/corpuses', function ($request) use ($database) 
 });
 
 $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
-    global $jsonResponse, $parseCsvOrArray, $toNullableInt, $toNullableFloat, $normalizeRoomLabel;
+    global $jsonResponse, $parseCsvOrArray, $toNullableInt, $toNullableFloat, $normalizeRoomLabel, $toIntClamped;
 
     $params = $request->params() ?: [];
+
+    $page = $toIntClamped($params['page'] ?? null, 1, 1, 1000);
+    $pageSize = $toIntClamped($params['pageSize'] ?? ($params['page_size'] ?? null), 20, 1, 100);
+    $offset = ($page - 1) * $pageSize;
 
     $roomLabels = $parseCsvOrArray($params['countRooms'] ?? null);
     $rooms = [];
@@ -410,7 +587,15 @@ $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
     if ($floorTo !== null) $where['AND']['floor[<=]'] = $floorTo;
     if ($corpuses !== []) $where['AND']['corpuses'] = $corpuses;
 
-    $flats = $database->select('flats', '*', $where);
+    $total = $database->count('flats', null, null, $where);
+    if ($total === null) $total = 0;
+
+    $whereWithPagination = $where;
+    $whereWithPagination['ORDER'] = ['id' => 'ASC'];
+    $whereWithPagination['LIMIT'] = [$offset, $pageSize];
+    $flats = $database->select('flats', '*', $whereWithPagination);
+
+    $totalPages = $pageSize > 0 ? (int)ceil($total / $pageSize) : 0;
     return $jsonResponse($request, [
         'request' => true,
         'data' => $flats,
@@ -423,6 +608,12 @@ $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
             'floorFrom' => $floorFrom,
             'floorTo' => $floorTo,
             'corpuses' => $corpuses,
+        ],
+        'pagination' => [
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'total' => $total,
+            'totalPages' => $totalPages,
         ],
     ]);
 });

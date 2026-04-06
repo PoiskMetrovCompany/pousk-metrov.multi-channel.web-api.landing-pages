@@ -22,6 +22,14 @@ try {
         ];
     }
 
+    $swaggerUrl = trim((string)($env['SWAGGER_URL'] ?? 'http://localhost:8081'));
+    if ($swaggerUrl === '') {
+        $swaggerUrl = 'http://localhost:8081';
+    }
+    $appConfig = [
+        'swaggerUrl' => rtrim($swaggerUrl, '/'),
+    ];
+
     $dbType = $env['DB_TYPE'] ?? '';
     $dbFileName = $env['DB_FILE'] ?? '';
     if ($dbType === '' || $dbFileName === '') {
@@ -37,7 +45,15 @@ try {
         );
     }
 
-    $dbFile = __DIR__ . '/' . $dbFileName;
+    $dbFile = str_starts_with($dbFileName, '/')
+        ? $dbFileName
+        : __DIR__ . '/' . $dbFileName;
+
+    $dbDir = dirname($dbFile);
+    if (!is_dir($dbDir) && !mkdir($dbDir, 0775, true) && !is_dir($dbDir)) {
+        throw new RuntimeException("Cannot create database directory: {$dbDir}");
+    }
+
     if (!file_exists($dbFile) && !touch($dbFile)) {
         throw new RuntimeException("Cannot create database file: {$dbFile}");
     }
@@ -81,6 +97,38 @@ try {
             }
         }
     }
+
+    // Ensure 'room' string column exists for canonical room labels (e.g., "Студия", "1 комната").
+    $hasRoom = in_array('room', $columnNames, true);
+    if (!$hasRoom) {
+        try {
+            $database->query("ALTER TABLE flats ADD COLUMN room VARCHAR(255) NULL;")->execute();
+        } catch (Throwable $e) {
+            if (stripos($e->getMessage(), 'duplicate column name') === false) {
+                throw $e;
+            }
+        }
+    }
+
+    // Create index for faster room filtering (no-op if already exists).
+    $database->query("CREATE INDEX IF NOT EXISTS idx_flats_room ON flats(room);")->execute();
+
+    // Backfill 'room' based on existing 'countRooms' where room is NULL.
+    // 0 => 'Студия', 1 => '1 комната', 2 => '2 комнаты', 3 => '3 комнаты', 4 => '4 комнаты', else NULL.
+    // This uses a simple CASE expression supported by SQLite.
+    $database->query(/** @lang text */ "
+        UPDATE flats
+        SET room = CASE
+            WHEN countRooms = 0 THEN 'Студия'
+            WHEN countRooms = 1 THEN '1 комната'
+            WHEN countRooms = 2 THEN '2 комнаты'
+            WHEN countRooms = 3 THEN '3 комнаты'
+            WHEN countRooms = 4 THEN '4 комнаты'
+            WHEN countRooms = 5 THEN '5 комнат'
+            ELSE NULL
+        END
+        WHERE room IS NULL AND countRooms IS NOT NULL
+    ")->execute();
 
 } catch (Throwable $exception) {
     http_response_code(500);

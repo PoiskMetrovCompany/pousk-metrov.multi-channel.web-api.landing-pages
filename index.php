@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 global $app;
 global $database;
+global $appConfig;
 require __DIR__ . '/bootstrap.php';
 
 
@@ -88,8 +89,34 @@ $normalizeRoomLabel = static function (string $label): ?int {
     return null;
 };
 
+// Convert arbitrary input to a canonical room label used in DB: "Студия", "1 комната", "2 комнаты", "3 комнаты", "4 комнаты".
+$toCanonicalRoom = static function ($value): ?string {
+    if ($value === null) return null;
+    // Accept both numeric and string-like values
+    $label = is_string($value) ? $value : (is_int($value) || is_float($value) ? (string)$value : (string)$value);
+    $n = null;
+    $s = mb_strtolower(trim((string)$label));
+    if ($s === '') return null;
+    if ($s === 'студия' || $s === 'studio' || $s === '0') {
+        return 'Студия';
+    }
+    if (preg_match('/^(\d+)/u', $s, $m)) {
+        $n = (int)$m[1];
+    }
+    if ($n === null) return null;
+    if ($n === 0) return 'Студия';
+    if ($n === 1) return '1 комната';
+    if ($n === 2) return '2 комнаты';
+    if ($n === 3) return '3 комнаты';
+    if ($n === 4) return '4 комнаты';
+    if ($n === 5) return '5 комнат';
+    return null;
+};
+
 $app->respond('GET', '/openapi.json', function ($request) {
     header('Content-Type: application/json; charset=utf-8');
+    global $appConfig;
+    $swaggerServerUrl = $appConfig['swaggerUrl'] ?? 'http://localhost:8081';
 
     $spec = [
         'openapi' => '3.0.3',
@@ -98,7 +125,7 @@ $app->respond('GET', '/openapi.json', function ($request) {
             'version' => '1.0.0',
         ],
         'servers' => [
-            ['url' => 'http://localhost:8081'],
+            ['url' => $swaggerServerUrl],
         ],
         'paths' => [
             '/' => [
@@ -138,6 +165,13 @@ $app->respond('GET', '/openapi.json', function ($request) {
                             'schema' => ['type' => 'string'],
                         ],
                         [
+                            'name' => 'uniqueRooms',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'If true, includes uniqueRooms array of canonical room labels',
+                            'schema' => ['type' => 'boolean', 'default' => false],
+                        ],
+                        [
                             'name' => 'page',
                             'in' => 'query',
                             'required' => false,
@@ -161,6 +195,69 @@ $app->respond('GET', '/openapi.json', function ($request) {
                                 ],
                             ],
                         ],
+                    ],
+                ],
+            ],
+            '/{source}/rooms' => [
+                'get' => [
+                    'summary' => 'Unique canonical room labels by source',
+                    'parameters' => [
+                        [
+                            'name' => 'source',
+                            'in' => 'path',
+                            'required' => true,
+                            'schema' => ['type' => 'string'],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => ['description' => 'OK'],
+                    ],
+                ],
+            ],
+            '/{source}/filter/rooms/{room}' => [
+                'get' => [
+                    'summary' => 'List flats by source and canonical room label',
+                    'parameters' => [
+                        [
+                            'name' => 'source',
+                            'in' => 'path',
+                            'required' => true,
+                            'schema' => ['type' => 'string'],
+                        ],
+                        [
+                            'name' => 'room',
+                            'in' => 'path',
+                            'required' => true,
+                            'schema' => [
+                                'type' => 'string',
+                                'enum' => ['Студия', '1 комната', '2 комнаты', '3 комнаты', '4 комнаты', '5 комнат'],
+                            ],
+                        ],
+                        [
+                            'name' => 'page',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'Page number (1-based)',
+                            'schema' => ['type' => 'integer', 'minimum' => 1, 'default' => 1],
+                        ],
+                        [
+                            'name' => 'pageSize',
+                            'in' => 'query',
+                            'required' => false,
+                            'description' => 'Items per page',
+                            'schema' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
+                        ],
+                    ],
+                    'responses' => [
+                        '200' => [
+                            'description' => 'OK',
+                            'content' => [
+                                'application/json' => [
+                                    'schema' => ['$ref' => '#/components/schemas/FlatsListResponse'],
+                                ],
+                            ],
+                        ],
+                        '400' => ['description' => 'Invalid room parameter'],
                     ],
                 ],
             ],
@@ -258,6 +355,7 @@ $app->respond('GET', '/openapi.json', function ($request) {
                         'price' => ['type' => 'integer', 'nullable' => true],
                         'imageUrl' => ['type' => 'string', 'nullable' => true],
                         'createdAt' => ['type' => 'string', 'nullable' => true],
+                        'room' => ['type' => 'string', 'nullable' => true, 'description' => 'Canonical room label: Студия, 1 комната, 2 комнаты, 3 комнаты, 4 комнаты'],
                     ],
                 ],
                 'Flat' => [
@@ -278,6 +376,7 @@ $app->respond('GET', '/openapi.json', function ($request) {
                         'price' => ['type' => 'integer', 'nullable' => true],
                         'imageUrl' => ['type' => 'string', 'nullable' => true],
                         'createdAt' => ['type' => 'string', 'nullable' => true],
+                        'room' => ['type' => 'string', 'nullable' => true, 'description' => 'Canonical room label'],
                     ],
                 ],
                 'Pagination' => [
@@ -392,7 +491,7 @@ $app->respond('POST', '/store', function ($request) use ($database) {
         }
     }
 
-    global $jsonResponse, $toNullableInt, $toNullableFloat;
+    global $jsonResponse, $toNullableInt, $toNullableFloat, $toCanonicalRoom;
 
     $parseNullableDateTime = static function ($value): ?string {
         if ($value === null) {
@@ -436,6 +535,14 @@ $app->respond('POST', '/store', function ($request) use ($database) {
     $data['imageUrl'] = is_string($imageUrl) ? (trim($imageUrl) !== '' ? $imageUrl : null) : null;
 
     $data['createdAt'] = $parseNullableDateTime($decoded['createdAt'] ?? null) ?? (new \DateTime())->format('Y-m-d H:i:s');
+
+    // Derive canonical textual room label for DB storage
+    $explicitRoom = $decoded['room'] ?? ($decoded['countRoomsLabel'] ?? null);
+    $roomCanonical = $toCanonicalRoom($explicitRoom);
+    if ($roomCanonical === null && $data['countRooms'] !== null) {
+        $roomCanonical = $toCanonicalRoom($data['countRooms']);
+    }
+    $data['room'] = $roomCanonical;
 
     $required = ['source', 'url', 'flatNumber', 'totalArea', 'floor', 'totalFloors'];
     $missing = [];
@@ -493,17 +600,116 @@ $app->respond('GET', '/[:source]', function ($request) use ($database) {
     $page = $toIntClamped($params['page'] ?? null, 1, 1, 1000);
     $pageSize = $toIntClamped($params['pageSize'] ?? ($params['page_size'] ?? null), 20, 1, 100);
     $offset = ($page - 1) * $pageSize;
+    $includeUniqueRooms = false;
+    $flag = $params['uniqueRooms'] ?? ($params['unique_rooms'] ?? null);
+    if ($flag !== null) {
+        $s = is_bool($flag) ? ($flag ? '1' : '0') : trim((string)$flag);
+        $includeUniqueRooms = ($s === '1' || strcasecmp($s, 'true') === 0 || strcasecmp($s, 'yes') === 0);
+    }
 
     $baseWhere = ['source' => $request->source];
     $total = $database->count('flats', null, null, $baseWhere);
     if ($total === null) $total = 0;
 
+    // Default ordering by id ASC
     $where = $baseWhere;
     $where['ORDER'] = ['id' => 'ASC'];
-    $where['LIMIT'] = [$offset, $pageSize];
-    $flats = $database->select('flats', '*', $where);
+
+    // For the first page, format the list so that the first items (up to 4)
+    // are Studio, 1k, 2k, 3k (if available), then the rest in default order.
+    if ($page === 1) {
+        $preferred = ['Студия', '1 комната', '2 комнаты', '3 комнаты'];
+        $poolSize = max($pageSize * 3, 100);
+
+        // Fetch pool
+        $poolWhere = $where;
+        $poolWhere['LIMIT'] = [0, $poolSize];
+        $pool = $database->select('flats', '*', $poolWhere);
+        if (!is_array($pool)) $pool = [];
+
+        $usedIds = [];
+        $selected = [];
+
+        // Pick first occurrences for preferred labels
+        foreach ($preferred as $label) {
+            foreach ($pool as $row) {
+                if (!is_array($row)) continue;
+                $id = $row['id'] ?? null;
+                if ($id === null || isset($usedIds[$id])) continue;
+                $room = $row['room'] ?? null;
+                if ($room === $label) {
+                    $selected[] = $row;
+                    $usedIds[$id] = true;
+                    break;
+                }
+            }
+            if (count($selected) >= $pageSize) break;
+        }
+
+        // Fill remaining from pool in default order
+        if (count($selected) < $pageSize) {
+            foreach ($pool as $row) {
+                if (!is_array($row)) continue;
+                $id = $row['id'] ?? null;
+                if ($id === null || isset($usedIds[$id])) continue;
+                $selected[] = $row;
+                $usedIds[$id] = true;
+                if (count($selected) >= $pageSize) break;
+            }
+        }
+
+        // If still not enough, fetch further pages until filled or exhausted
+        $nextOffset = $poolSize;
+        while (count($selected) < $pageSize && $nextOffset < $total) {
+            $chunkWhere = $where;
+            $chunkWhere['LIMIT'] = [$nextOffset, $pageSize];
+            $chunk = $database->select('flats', '*', $chunkWhere);
+            if (!is_array($chunk) || $chunk === []) break;
+            foreach ($chunk as $row) {
+                if (!is_array($row)) continue;
+                $id = $row['id'] ?? null;
+                if ($id === null || isset($usedIds[$id])) continue;
+                $selected[] = $row;
+                $usedIds[$id] = true;
+                if (count($selected) >= $pageSize) break 2;
+            }
+            $nextOffset += $pageSize;
+        }
+
+        $flats = array_slice($selected, 0, $pageSize);
+    } else {
+        // Other pages: regular pagination
+        $where['LIMIT'] = [$offset, $pageSize];
+        $flats = $database->select('flats', '*', $where);
+    }
 
     $totalPages = $pageSize > 0 ? (int)ceil($total / $pageSize) : 0;
+
+    $extra = [];
+    if ($includeUniqueRooms) {
+        $rows = $database->select('flats', ['room'], [
+            'AND' => [
+                'source' => $request->source,
+                'room[!]' => null,
+            ],
+            'GROUP' => 'room',
+        ]);
+        $found = [];
+        foreach ($rows as $r) {
+            if (is_array($r) && isset($r['room']) && $r['room'] !== null && $r['room'] !== '') {
+                $found[] = (string)$r['room'];
+            }
+        }
+        // Sort by preferred canonical order
+        $order = array_flip(['Студия','1 комната','2 комнаты','3 комнаты','4 комнаты','5 комнат']);
+        usort($found, static function($a, $b) use ($order) {
+            $ia = $order[$a] ?? PHP_INT_MAX;
+            $ib = $order[$b] ?? PHP_INT_MAX;
+            if ($ia === $ib) return strcmp($a, $b);
+            return $ia <=> $ib;
+        });
+        $extra['uniqueRooms'] = array_values(array_unique($found));
+    }
 
     return $jsonResponse($request, [
         'request' => true,
@@ -514,6 +720,38 @@ $app->respond('GET', '/[:source]', function ($request) use ($database) {
             'total' => $total,
             'totalPages' => $totalPages,
         ],
+        ...$extra,
+    ]);
+});
+
+// Return unique canonical room labels for a source
+$app->respond('GET', '/[:source]/rooms', function ($request) use ($database) {
+    global $jsonResponse;
+    $rows = $database->select('flats', ['room'], [
+        'AND' => [
+            'source' => $request->source,
+            'room[!]' => null,
+        ],
+        'GROUP' => 'room',
+    ]);
+    $found = [];
+    foreach ($rows as $r) {
+        if (is_array($r) && isset($r['room']) && $r['room'] !== null && $r['room'] !== '') {
+            $found[] = (string)$r['room'];
+        }
+    }
+    $order = array_flip(['Студия','1 комната','2 комнаты','3 комнаты','4 комнаты','5 комнат']);
+    usort($found, static function($a, $b) use ($order) {
+        $ia = $order[$a] ?? PHP_INT_MAX;
+        $ib = $order[$b] ?? PHP_INT_MAX;
+        if ($ia === $ib) return strcmp($a, $b);
+        return $ia <=> $ib;
+    });
+    $unique = array_values(array_unique($found));
+
+    return $jsonResponse($request, [
+        'request' => true,
+        'data' => $unique,
     ]);
 });
 
@@ -543,7 +781,7 @@ $app->respond('GET', '/[:source]/corpuses', function ($request) use ($database) 
 });
 
 $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
-    global $jsonResponse, $parseCsvOrArray, $toNullableInt, $toNullableFloat, $normalizeRoomLabel, $toIntClamped;
+    global $jsonResponse, $parseCsvOrArray, $toNullableInt, $toNullableFloat, $normalizeRoomLabel, $toIntClamped, $toCanonicalRoom;
 
     $params = $request->params() ?: [];
 
@@ -577,7 +815,20 @@ $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
     $where = ['AND' => ['source' => $request->source]];
 
     if ($rooms !== []) {
-        $where['AND']['countRooms'] = $rooms;
+        // Robust filtering: we prefer canonical textual room label stored in `flats.room`.
+        // This covers cases where clients sent `room` and `countRooms` ended up NULL.
+        $roomLabels = [];
+        foreach ($rooms as $r) {
+            $label = $toCanonicalRoom($r);
+            if ($label !== null) $roomLabels[] = $label;
+        }
+        $roomLabels = array_values(array_unique($roomLabels));
+        if ($roomLabels !== []) {
+            $where['AND']['room'] = $roomLabels;
+        } else {
+            // Fallback to numeric filtering (should rarely happen).
+            $where['AND']['countRooms'] = $rooms;
+        }
     }
     if ($priceFrom !== null) $where['AND']['price[>=]'] = $priceFrom;
     if ($priceTo !== null) $where['AND']['price[<=]'] = $priceTo;
@@ -608,6 +859,56 @@ $app->respond('GET', '/[:source]/filter', function ($request) use ($database) {
             'floorFrom' => $floorFrom,
             'floorTo' => $floorTo,
             'corpuses' => $corpuses,
+        ],
+        'pagination' => [
+            'page' => $page,
+            'pageSize' => $pageSize,
+            'total' => $total,
+            'totalPages' => $totalPages,
+        ],
+    ]);
+});
+
+// Filter by canonical room text: /{source}/filter/rooms/{room}
+$app->respond('GET', '/[:source]/filter/rooms/[:room]', function ($request) use ($database) {
+    global $jsonResponse, $toIntClamped, $toCanonicalRoom;
+
+    $params = $request->params() ?: [];
+    $page = $toIntClamped($params['page'] ?? null, 1, 1, 1000);
+    $pageSize = $toIntClamped($params['pageSize'] ?? ($params['page_size'] ?? null), 20, 1, 100);
+    $offset = ($page - 1) * $pageSize;
+
+    $inputRoom = $request->room ?? '';
+    $canonical = $toCanonicalRoom($inputRoom);
+    $allowed = ['Студия', '1 комната', '2 комнаты', '3 комнаты', '4 комнаты', '5 комнат'];
+    if ($canonical === null || !in_array($canonical, $allowed, true)) {
+        return $jsonResponse($request, [
+            'request' => false,
+            'error' => 'Invalid room parameter',
+            'allowed' => $allowed,
+        ], 400);
+    }
+
+    $where = [
+        'AND' => [
+            'source' => $request->source,
+            'room' => $canonical,
+        ],
+    ];
+    $total = $database->count('flats', null, null, $where);
+    if ($total === null) $total = 0;
+
+    $whereWithPagination = $where;
+    $whereWithPagination['ORDER'] = ['id' => 'ASC'];
+    $whereWithPagination['LIMIT'] = [$offset, $pageSize];
+    $flats = $database->select('flats', '*', $whereWithPagination);
+
+    $totalPages = $pageSize > 0 ? (int)ceil($total / $pageSize) : 0;
+    return $jsonResponse($request, [
+        'request' => true,
+        'data' => $flats,
+        'filters' => [
+            'room' => $canonical,
         ],
         'pagination' => [
             'page' => $page,
